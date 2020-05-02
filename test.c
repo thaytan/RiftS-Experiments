@@ -11,14 +11,17 @@
 
 #define FEATURE_BUFFER_SIZE 64
 
-bool done = false;
+#define KEEPALIVE_INTERVAL_MS 1000
+#define CAMERA_REPORT_INTERVAL_MS 1000
+
+bool shutdown_and_exit = false;
 
 static int sleep_us (uint64_t usec);
 
 static void
 sigint_handler (int signum)
 {
-    done = true;
+    shutdown_and_exit = true;
 }
 
 static void printBuffer(const char *label, unsigned char *buf, int length) {
@@ -177,6 +180,67 @@ send_keepalive (hid_device *hid)
 }
 
 static void
+send_camera_report (hid_device *hid, bool enable, bool radio_sync_bit)
+{
+/*
+ *   05 O1 O2 P1 P1 P2 P2 P3 P3 P4 P4 P5 P5 E1 E1 E3
+ *   E4 E5 U1 U2 U3 A1 A1 A1 A1 A2 A2 A2 A2 A3 A3 A3
+ *   A3 A4 A4 A4 A4 A5 A5 A5 A5
+ *
+ *   O1 = Camera stream on (0x00 = off, 0x1 = on)
+ *   O2 = Radio Sync maybe?
+ *   Px = Vertical offset / position of camera x passthrough view
+ *   Ex = Exposure of camera x passthrough view
+ *   Ax = ? of camera x. 4 byte LE, Always seems to take values 0x3f0-0x4ff
+ *        but I can't see the effect on the image
+ *   U1U2U3 = 26 00 40 always?
+ */
+  unsigned char buf[41] = {
+#if 0
+    0x05, 0x01, 0x01, 0xb3, 0x36, 0xb3, 0x36, 0xb3, 0x36, 0xb3, 0x36, 0xb3, 0x36, 0xf0, 0xf0, 0xf0,
+    0xf0, 0xf0, 0x26, 0x00, 0x40, 0x7a, 0x04, 0x00, 0x00, 0xa7, 0x04, 0x00, 0x00, 0xa7, 0x04, 0x00,
+    0x00, 0xa5, 0x04, 0x00, 0x00, 0xa8, 0x04, 0x00, 0x00
+#else
+    0x05, 0x01, 0x01, 0xb3, 0x36, 0xb3, 0x36, 0xb3, 0x36, 0xb3, 0x36, 0xb3, 0x36, 0xf0, 0xf0, 0xf0,
+    0xf0, 0xf0, 0x26, 0x00, 0x40, 0x7a, 0x04, 0x00, 0x00, 0xa7, 0x04, 0x00, 0x00, 0xa7, 0x04, 0x00,
+    0x00, 0xa5, 0x04, 0x00, 0x00, 0xa8, 0x04, 0x00, 0x00
+#endif
+  };
+
+  buf[1] = enable ? 0x1 : 0x0;
+  buf[2] = radio_sync_bit ? 0x1 : 0x0;
+
+  hid_send_feature_report(hid, buf, 41);
+}
+
+#if 0
+static void
+send_report19 (hid_device *hid) {
+  static bool parity = false;
+
+  unsigned char buf1[61] = {
+    0x13, 0x74, 0x1f, 0x62, 0xec, 0xa4, 0x7c, 0x1b, 0xd2, 0x97, 0x01, 0x08, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+  };
+
+  unsigned char buf2[61] = {
+    0x13, 0x74, 0x1f, 0x62, 0xec, 0xa4, 0x7c, 0x1b, 0xd2, 0x22, 0x20, 0xe8, 0x03, 0xf2, 0x34, 0x00,
+    0x00, 0x1b, 0x40, 0x03, 0xa3, 0x81, 0xad, 0xe7, 0x0f, 0x69, 0x00, 0x2f, 0xa9, 0xd0, 0x93, 0x07,
+    0x0e, 0x68, 0x08, 0xbf, 0x4b, 0x69, 0x0f, 0x60, 0x18, 0xbf, 0x00, 0x23, 0xa6, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+  };
+ 
+  /* Alternate sending buf1 and buf2 to see what happens */
+  if (parity)
+    hid_send_feature_report(hid, buf1, 61);
+  else
+    hid_send_feature_report(hid, buf2, 61);
+}
+#endif
+
+static void
 update_hmd_device (const char *label, hid_device *hid)
 {
   unsigned char buf[FEATURE_BUFFER_SIZE];
@@ -186,7 +250,7 @@ update_hmd_device (const char *label, hid_device *hid)
     int size = hid_read(hid, buf, FEATURE_BUFFER_SIZE);
     if(size < 0){
       fprintf (stderr, "error reading from device");
-      done = true;
+      shutdown_and_exit = true;
       break;
     } else if(size == 0) {
       break; // No more messages, return.
@@ -353,10 +417,6 @@ int main() {
   buff[2] = 0x01;
   hid_send_feature_report(hid_hmd, buff, 3); // Unknown
 
-  buff[0] = 0x02;
-  buff[1] = 0x00;
-  hid_send_feature_report(hid_hmd, buff, 2); // Disables HMD
-
   /* Dump firmware blocks. Higher blocks don't have anything, some lower blocks crash the headset */
   dump_fw_block(hid_hmd, 1);
   for (int blk = 9; blk < 0x13; blk++)
@@ -364,37 +424,71 @@ int main() {
 
   buff[0] = 0x14;
   buff[1] = 0x01;
-  hid_send_feature_report(hid_hmd, buff, 2); // Enables Camera Device
+  hid_send_feature_report(hid_hmd, buff, 2); // Not sure what this is doing, everything seems to work anyway without it
 
   buff[0] = 0x0A;
   buff[1] = 0x02;
-  hid_send_feature_report(hid_hmd, buff, 2); // Turn on Wireless
+  hid_send_feature_report(hid_hmd, buff, 2); // Turn on radio to controllers
 
   buff[0] = 0x02;
   buff[1] = 0x01;
-  hid_send_feature_report(hid_hmd, buff, 2); // Enables HMD
+  hid_send_feature_report(hid_hmd, buff, 2); // Enables prox sensor + HMD IMU etc
+
+  buff[0] = 0x08;
+  buff[1] = 0x01;
+  hid_send_feature_report(hid_hmd, buff, 2); // Enables LCD screen
+
+  /* Send camera report with enable=true enables the streaming. The
+   * 2nd byte seems something to do with sync, but doesn't always work,
+   * not sure why yet. */
+  send_camera_report (hid_hmd, 1, 0);
 
   /* Loop until exit polling devices and sending keep-alive */
-  uint64_t last_keepalive = ohmd_monotonic_get();
-  while(!done)
+  uint64_t last_keepalive = 0;
+  uint64_t last_report19 = 0;
+  while(!shutdown_and_exit)
   {
     uint64_t now;
     sleep_us (1000);
 
     now = ohmd_monotonic_get();
-    if (now - last_keepalive >= 1000000000) {
+    if (now - last_keepalive >= KEEPALIVE_INTERVAL_MS * 1000000) {
       send_keepalive (hid_hmd);
       last_keepalive = now;
     }
 
     update_hmd_device ("HMD       ", hid_hmd);
+
+    /* State report is 5 bytes. Byte 0 = 00 or 01 based on prox sensor */
     update_hmd_device ("State     ", hid_state);
+
     update_hmd_device ("Controller", hid_controller);
   }
 
 cleanup:
-  if (hid_hmd)
+  if (hid_hmd) {
+    /* Disable camera stream */
+    send_camera_report (hid_hmd, 0, 0);
+
+    buff[0] = 0x02;
+    buff[1] = 0x00;
+    hid_send_feature_report(hid_hmd, buff, 2); // Disable HMD + prox sensor
+
+    buff[0] = 0x08;
+    buff[1] = 0x00;
+    hid_send_feature_report(hid_hmd, buff, 2); // Disable LCD
+
+    buff[0] = 0x0A;
+    buff[1] = 0x00;
+    hid_send_feature_report(hid_hmd, buff, 2); // Disable radio
+
+    buff[0] = 0x14;
+    buff[1] = 0x00;
+    hid_send_feature_report(hid_hmd, buff, 2); // Disable something
+
     hid_close(hid_hmd);
+  }
+
   if (hid_controller)
     hid_close(hid_controller);
   hid_free_enumeration(dev);
