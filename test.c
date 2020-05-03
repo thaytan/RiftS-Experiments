@@ -165,7 +165,10 @@ dump_fw_block (hid_device *dev, uint8_t block_id)
          total_read, block_len);
     }
     sprintf (label, "FW Block %02x", block_id);
-    printBuffer(label, outbuf, total_read);
+    if (outbuf[0] == '{' && outbuf[total_read-2] == '}' && outbuf[total_read-1] == 0)
+      printf ("%s\n", outbuf); // Dump JSON string
+    else
+      printBuffer(label, outbuf, total_read);
   }
 
   free (outbuf);
@@ -440,9 +443,13 @@ int main() {
   hid_send_feature_report(hid_hmd, buff, 3); // Unknown
 
   /* Dump firmware blocks. Higher blocks don't have anything, some lower blocks crash the headset */
-  dump_fw_block(hid_hmd, 1);
-  for (int blk = 9; blk < 0x13; blk++)
-    dump_fw_block(hid_hmd, blk);
+  // dump_fw_block(hid_hmd, 1); // Enable this to dump a bunch of interesting firmware blob
+  dump_fw_block(hid_hmd, 0xB);
+  dump_fw_block(hid_hmd, 0xD);
+  dump_fw_block(hid_hmd, 0xE);
+  dump_fw_block(hid_hmd, 0xF);
+  dump_fw_block(hid_hmd, 0x10);
+  dump_fw_block(hid_hmd, 0x12);
 
   buff[0] = 0x14;
   buff[1] = 0x01;
