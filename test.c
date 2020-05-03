@@ -16,6 +16,8 @@
 
 bool shutdown_and_exit = false;
 
+bool display_on = false;
+
 static int sleep_us (uint64_t usec);
 
 static void
@@ -213,6 +215,17 @@ send_camera_report (hid_device *hid, bool enable, bool radio_sync_bit)
   hid_send_feature_report(hid, buf, 41);
 }
 
+static int
+set_screen_state (hid_device *hid, bool enable)
+{
+  uint8_t buf[2];
+
+  // Enable/disable LCD screen
+  buf[0] = 0x08;
+  buf[1] = enable ? 0x01 : 0;
+  return hid_send_feature_report(hid, buf, 2);
+}
+
 #if 0
 static void
 send_report19 (hid_device *hid) {
@@ -231,7 +244,7 @@ send_report19 (hid_device *hid) {
     0x0e, 0x68, 0x08, 0xbf, 0x4b, 0x69, 0x0f, 0x60, 0x18, 0xbf, 0x00, 0x23, 0xa6, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
   };
- 
+
   /* Alternate sending buf1 and buf2 to see what happens */
   if (parity)
     hid_send_feature_report(hid, buf1, 61);
@@ -257,6 +270,15 @@ update_hmd_device (const char *label, hid_device *hid)
     }
 
     printBuffer(label, buf, size);
+    if (buf[0] == 0x66) {
+      // System state packet. Enable the screen if the prox sensor is
+      // triggered
+      bool prox_sensor = (buf[1] == 0) ? false : true;
+      if (prox_sensor != display_on) {
+        set_screen_state (hid, prox_sensor);
+        display_on = prox_sensor;
+      }
+    }
   }
 }
 
@@ -434,10 +456,6 @@ int main() {
   buff[1] = 0x01;
   hid_send_feature_report(hid_hmd, buff, 2); // Enables prox sensor + HMD IMU etc
 
-  buff[0] = 0x08;
-  buff[1] = 0x01;
-  hid_send_feature_report(hid_hmd, buff, 2); // Enables LCD screen
-
   /* Send camera report with enable=true enables the streaming. The
    * 2nd byte seems something to do with sync, but doesn't always work,
    * not sure why yet. */
@@ -445,7 +463,6 @@ int main() {
 
   /* Loop until exit polling devices and sending keep-alive */
   uint64_t last_keepalive = 0;
-  uint64_t last_report19 = 0;
   while(!shutdown_and_exit)
   {
     uint64_t now;
@@ -474,9 +491,7 @@ cleanup:
     buff[1] = 0x00;
     hid_send_feature_report(hid_hmd, buff, 2); // Disable HMD + prox sensor
 
-    buff[0] = 0x08;
-    buff[1] = 0x00;
-    hid_send_feature_report(hid_hmd, buff, 2); // Disable LCD
+    set_screen_state (hid_hmd, false); // Disable LCD
 
     buff[0] = 0x0A;
     buff[1] = 0x00;
