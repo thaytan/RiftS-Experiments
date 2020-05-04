@@ -1,3 +1,8 @@
+/*
+ * Copyright 2019 Lucas Teske <lucas@teske.com.br>
+ * Copyright 2020 Jan Schmidt <jan#centricular.com>
+ * SPDX-License-Identifier: BSL-1.0
+ */
 #include <stdio.h>
 #include <hidapi/hidapi.h>
 #include <stdint.h>
