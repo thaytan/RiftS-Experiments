@@ -26,6 +26,7 @@ main_sources = [
 main_deps = [
   dep_hidapi,
 	dep_thread,
-	dep_usb
+	dep_usb,
+  dep_libm
 ]
 executable('main', main_sources, dependencies : main_deps)
