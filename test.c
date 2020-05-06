@@ -13,6 +13,8 @@
 #include <unistd.h>
 #include <time.h>
 #include <errno.h>
+#include <assert.h>
+#include <math.h>
 
 #define FEATURE_BUFFER_SIZE 64
 
@@ -20,7 +22,12 @@
 #define CAMERA_REPORT_INTERVAL_MS 1000
 
 bool shutdown_and_exit = false;
-
+bool dump_all = true;
+bool dump_fw = false;
+bool dump_controllers = false;
+bool dump_hmd = false;
+bool dump_parsed = false;
+bool dump_singleline = false;
 bool display_on = false;
 
 static int sleep_us (uint64_t usec);
@@ -31,7 +38,13 @@ sigint_handler (int signum)
     shutdown_and_exit = true;
 }
 
-static void printBuffer(const char *label, unsigned char *buf, int length) {
+static void hexdump(const unsigned char *buf, int length) {
+  for(int i = 0; i < length; i++){
+    printf("%02x ", buf[i]);
+  }
+}
+
+static void printBuffer(const char *label, const unsigned char *buf, int length) {
   int indent;
   char ascii[17];
 
@@ -235,6 +248,20 @@ set_screen_state (hid_device *hid, bool enable)
 }
 
 #if 0
+/* Report 18/19 are for talking to the controllers,
+ * they start with the same 8-byte device ID as the
+ * controller reports */
+static void
+send_report18 (hid_device *hid) {
+  unsigned char buf1[61] = {
+    0x12, 0x74, 0x1f, 0x62, 0xec, 0xa4, 0x7c, 0x1b, 0xd2, 0x2b, 0x20, 0xe8, 0x03, 0x44, 0x00, 0x00,
+    0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+  };
+  hid_send_feature_report(hid, buf1, 61);
+}
+
 static void
 send_report19 (hid_device *hid) {
   static bool parity = false;
@@ -261,8 +288,126 @@ send_report19 (hid_device *hid) {
 }
 #endif
 
+typedef struct {
+  uint8_t id;
+
+  uint64_t device_id;
+  uint16_t unknown_varying1;
+  uint16_t unknown_const1;
+
+  uint64_t timestamp;
+
+  int16_t accel[3];
+  int16_t gyro[3];
+
+  uint8_t unknown1;
+
+  /* There seems to be some button
+   * press info here */
+  uint8_t button_mask;
+  uint8_t unknown2[13];
+
+  uint16_t joystick_capsense;
+  uint16_t trigger_capsense;
+
+  uint8_t unknown3[3];
+
+  uint8_t button_capsense_maybe[6];
+
+  uint8_t unknown_const2;
+} __attribute__((aligned(1), packed)) controller_report_t;
+
+typedef struct {
+  int16_t accel[3];
+  int16_t gyro[3];
+
+  uint8_t unknown1[3];
+} __attribute__((aligned(1), packed)) hmd_imu_sample_t;
+
+typedef struct {
+  uint8_t id;
+  uint16_t unknown_const1;
+
+  uint32_t timestamp;
+
+  uint8_t unknown_const_zero;
+  hmd_imu_sample_t samples[2];
+
+  uint8_t unknown2[26];
+} __attribute__((aligned(1), packed)) hmd_report_t;
+
 static void
-update_hmd_device (const char *label, hid_device *hid)
+handle_hmd_report (const unsigned char *buf, int size)
+{
+  hmd_report_t report;
+
+  assert (buf[0] == 0x65);
+  assert (size == 64);
+  assert (size == sizeof (hmd_report_t));
+
+  report = *(hmd_report_t *)(buf);
+
+  if (!(dump_hmd || dump_all))
+    return;
+
+  if (!dump_parsed) {
+    printBuffer("HMD", buf, size);
+    return;
+  }
+
+  printf ("const %u ts %6u zero %u ",
+      report.unknown_const1, report.timestamp, report.unknown_const_zero);
+
+  for (int i = 0; i < 2; i++) {
+    printf ("accel[%d] %5d %5d %5d gyro[%d] %5d %5d %5d unknown ",
+      i, report.samples[i].accel[0], report.samples[i].accel[1], report.samples[i].accel[2],
+      i, report.samples[i].gyro[0], report.samples[i].gyro[1], report.samples[i].gyro[2]);
+    hexdump (report.samples[i].unknown1, sizeof(report.samples[i].unknown1));
+  }
+
+  hexdump (report.unknown2, sizeof(report.unknown2));
+
+  if (dump_singleline) printf ("\r");
+  else printf ("\n");
+}
+
+static void
+handle_controller_report (const unsigned char *buf, int size)
+{
+  controller_report_t report;
+
+  assert (buf[0] == 0x67);
+  assert (size == 62);
+  assert (size == sizeof (controller_report_t));
+
+  report = *(controller_report_t *)(buf);
+
+  if (!(dump_controllers || dump_all))
+    return;
+
+  if (!dump_parsed) {
+    printBuffer("Controller", buf, size);
+    return;
+  }
+
+  printf ("device %08lx %u %u ts %10lu accel %6d %6d %6d gyro %6d %6d %6d unknown1 %u button %x unknown2 ",
+      report.device_id, report.unknown_varying1, report.unknown_const1,
+      report.timestamp, report.accel[0], report.accel[1], report.accel[2],
+      report.gyro[0], report.gyro[1], report.gyro[2], report.unknown1, report.button_mask);
+  hexdump (report.unknown2, 13);
+  printf (" js cap %5u trigger cap %5u unknown3 ",
+      report.joystick_capsense, report.trigger_capsense);
+  hexdump (report.unknown3, 3);
+  printf (" button cap ");
+  hexdump (report.button_capsense_maybe, 6);
+  printf (" end %u", report.unknown_const2);
+
+  if (dump_singleline) printf ("\r");
+  else printf ("\n");
+}
+
+static void
+update_hmd_device (hid_device *hid)
 {
   unsigned char buf[FEATURE_BUFFER_SIZE];
 
@@ -277,8 +422,11 @@ update_hmd_device (const char *label, hid_device *hid)
       break; // No more messages, return.
     }
 
-    printBuffer(label, buf, size);
-    if (buf[0] == 0x66) {
+    if (buf[0] == 0x65)
+      handle_hmd_report (buf, size);
+    else if (buf[0] == 0x67)
+      handle_controller_report (buf, size);
+    else if (buf[0] == 0x66) {
       // System state packet. Enable the screen if the prox sensor is
       // triggered
       bool prox_sensor = (buf[1] == 0) ? false : true;
@@ -287,6 +435,8 @@ update_hmd_device (const char *label, hid_device *hid)
         display_on = prox_sensor;
       }
     }
+    else
+     printBuffer("Unknown report!", buf, size);
   }
 }
 
@@ -348,8 +498,20 @@ struct DeviceInfo {
   uint16_t unk4;
 } __attribute__((aligned(1), packed));
 
-int main() {
+static void
+print_usage (const char *argv0)
+{
+  printf ("Usage %s [-f] [-c] [-h]\n", argv0);
+  printf ("  -f print firmware dumps\n");
+  printf ("  -c print controller reports only\n");
+  printf ("  -h print HMD reports only\n");
+  printf ("  -s print HMD or Controller report on a single line using \\r\n");
+  printf ("  -p Parse HMD or Controller reports\n");
+}
+
+int main(int argc, char **argv) {
   struct DeviceInfo devInfo;
+  int a;
 
   struct sigaction sigint_action;
   sigint_action.sa_handler = sigint_handler;
@@ -358,9 +520,29 @@ int main() {
 
   sigaction (SIGINT, &sigint_action, NULL);
 
+  for (a = 1; a < argc; a++) {
+    if (strcmp (argv[a], "-c") == 0) {
+      dump_all = false;
+      dump_controllers = true;
+    } else if (strcmp (argv[a], "-h") == 0) {
+      dump_all = false;
+      dump_hmd = true;
+    } else if (strcmp (argv[a], "-f") == 0) {
+      dump_all = false;
+      dump_fw = true;
+    } else if (strcmp (argv[a], "-p") == 0) {
+      dump_parsed = true;
+    } else if (strcmp (argv[a], "-s") == 0) {
+      dump_singleline = false;
+    } else {
+      print_usage (argv[0]);
+      exit (0);
+    }
+  }
+
   struct hid_device_info* dev = hid_enumerate(0x2833, 0x0051);
   if (dev == NULL) {
-    printf("Not found\n");
+    printf("No Rift S found\n");
     return 1;
   }
 
@@ -447,14 +629,16 @@ int main() {
   buff[2] = 0x01;
   hid_send_feature_report(hid_hmd, buff, 3); // Unknown
 
-  /* Dump firmware blocks. Higher blocks don't have anything, some lower blocks crash the headset */
-  // dump_fw_block(hid_hmd, 1); // Enable this to dump a bunch of interesting firmware blob
-  dump_fw_block(hid_hmd, 0xB);
-  dump_fw_block(hid_hmd, 0xD);
-  dump_fw_block(hid_hmd, 0xE);
-  dump_fw_block(hid_hmd, 0xF);
-  dump_fw_block(hid_hmd, 0x10);
-  dump_fw_block(hid_hmd, 0x12);
+  if (dump_fw || dump_all) {
+    /* Dump firmware blocks. Higher blocks don't have anything, some lower blocks crash the headset */
+    // dump_fw_block(hid_hmd, 1); // Enable this to dump a bunch of interesting firmware blob
+    dump_fw_block(hid_hmd, 0xB);
+    dump_fw_block(hid_hmd, 0xD);
+    dump_fw_block(hid_hmd, 0xE);
+    dump_fw_block(hid_hmd, 0xF);
+    dump_fw_block(hid_hmd, 0x10);
+    dump_fw_block(hid_hmd, 0x12);
+  }
 
   buff[0] = 0x14;
   buff[1] = 0x01;
@@ -486,12 +670,12 @@ int main() {
       last_keepalive = now;
     }
 
-    update_hmd_device ("HMD       ", hid_hmd);
+    update_hmd_device (hid_hmd);
 
     /* State report is 5 bytes. Byte 0 = 00 or 01 based on prox sensor */
-    update_hmd_device ("State     ", hid_state);
+    update_hmd_device (hid_state);
 
-    update_hmd_device ("Controller", hid_controller);
+    update_hmd_device (hid_controller);
   }
 
 cleanup:
