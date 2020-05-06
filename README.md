@@ -24,10 +24,14 @@ then build the tool and do this:
   1. **Remove the battery** from your *left* controller
   1. **Insert the battery** into your *right* controller
   1. Let the tool run for 5-10 seconds more, then hit ctrl-C
-  1. gzip the resulting log, and email it to <mailto:thaytan@noraisin.net>
+  1. gzip the resulting log, and email it to <mailto:thaytan@noraisin.net>. If you could mention
+     which git commit you used, that would be helpful - as I expect this tool to evolve quickly.
 
+Note: The log files will contain device addresses and IDs that uniquely identify your headset and controllers.
+I don't think that's a problem in general, but nevertheless I won't be publishing any portion of your log
+without stripping that information.
 
-## Problems
+## Problems?
 
 Running the tool requires that your user account has access to the Rift S USB devices. The
 OpenHMD wiki has some instructions on setting that up.
@@ -46,6 +50,10 @@ Run:
  * meson build/
  * ninja -C build
  * ./build/dump-rift-s
+
+## Running
+
+You can run `dump-rift-s --help` to get some basic information about some command line options it supports.
 
 ## Report parsing
 
