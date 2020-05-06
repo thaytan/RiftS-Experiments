@@ -16,6 +16,8 @@
 #include <assert.h>
 #include <math.h>
 
+#include "packets.h"
+
 #define FEATURE_BUFFER_SIZE 64
 
 #define KEEPALIVE_INTERVAL_MS 1000
@@ -288,64 +290,14 @@ send_report19 (hid_device *hid) {
 }
 #endif
 
-typedef struct {
-  uint8_t id;
-
-  uint64_t device_id;
-  uint16_t unknown_varying1;
-  uint16_t unknown_const1;
-
-  uint64_t timestamp;
-
-  int16_t accel[3];
-  int16_t gyro[3];
-
-  uint8_t unknown1;
-
-  /* There seems to be some button
-   * press info here */
-  uint8_t button_mask;
-  uint8_t unknown2[13];
-
-  uint16_t joystick_capsense;
-  uint16_t trigger_capsense;
-
-  uint8_t unknown3[3];
-
-  uint8_t button_capsense_maybe[6];
-
-  uint8_t unknown_const2;
-} __attribute__((aligned(1), packed)) controller_report_t;
-
-typedef struct {
-  int16_t accel[3];
-  int16_t gyro[3];
-
-  uint8_t unknown1[3];
-} __attribute__((aligned(1), packed)) hmd_imu_sample_t;
-
-typedef struct {
-  uint8_t id;
-  uint16_t unknown_const1;
-
-  uint32_t timestamp;
-
-  uint8_t unknown_const_zero;
-  hmd_imu_sample_t samples[2];
-
-  uint8_t unknown2[26];
-} __attribute__((aligned(1), packed)) hmd_report_t;
-
 static void
 handle_hmd_report (const unsigned char *buf, int size)
 {
   hmd_report_t report;
 
-  assert (buf[0] == 0x65);
-  assert (size == 64);
-  assert (size == sizeof (hmd_report_t));
-
-  report = *(hmd_report_t *)(buf);
+  if (!parse_hmd_report (&report, buf, size)) {
+    printBuffer("Invalid HMD Report", buf, size);
+  }
 
   if (!(dump_hmd || dump_all))
     return;
@@ -355,20 +307,7 @@ handle_hmd_report (const unsigned char *buf, int size)
     return;
   }
 
-  printf ("const %u ts %6u zero %u ",
-      report.unknown_const1, report.timestamp, report.unknown_const_zero);
-
-  for (int i = 0; i < 2; i++) {
-    printf ("accel[%d] %5d %5d %5d gyro[%d] %5d %5d %5d unknown ",
-      i, report.samples[i].accel[0], report.samples[i].accel[1], report.samples[i].accel[2],
-      i, report.samples[i].gyro[0], report.samples[i].gyro[1], report.samples[i].gyro[2]);
-    hexdump (report.samples[i].unknown1, sizeof(report.samples[i].unknown1));
-  }
-
-  hexdump (report.unknown2, sizeof(report.unknown2));
-
-  if (dump_singleline) printf ("\r");
-  else printf ("\n");
+  dump_hmd_report (&report, dump_singleline ? '\r' : '\n');
 }
 
 static void
@@ -376,11 +315,9 @@ handle_controller_report (const unsigned char *buf, int size)
 {
   controller_report_t report;
 
-  assert (buf[0] == 0x67);
-  assert (size == 62);
-  assert (size == sizeof (controller_report_t));
-
-  report = *(controller_report_t *)(buf);
+  if (!parse_controller_report (&report, buf, size)) {
+    printBuffer("Invalid Controller Report", buf, size);
+  }
 
   if (!(dump_controllers || dump_all))
     return;
@@ -390,20 +327,7 @@ handle_controller_report (const unsigned char *buf, int size)
     return;
   }
 
-  printf ("device %08lx %u %u ts %10lu accel %6d %6d %6d gyro %6d %6d %6d unknown1 %u button %x unknown2 ",
-      report.device_id, report.unknown_varying1, report.unknown_const1,
-      report.timestamp, report.accel[0], report.accel[1], report.accel[2],
-      report.gyro[0], report.gyro[1], report.gyro[2], report.unknown1, report.button_mask);
-  hexdump (report.unknown2, 13);
-  printf (" js cap %5u trigger cap %5u unknown3 ",
-      report.joystick_capsense, report.trigger_capsense);
-  hexdump (report.unknown3, 3);
-  printf (" button cap ");
-  hexdump (report.button_capsense_maybe, 6);
-  printf (" end %u", report.unknown_const2);
-
-  if (dump_singleline) printf ("\r");
-  else printf ("\n");
+  dump_controller_report (&report, dump_singleline ? '\r' : '\n');
 }
 
 static void

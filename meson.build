@@ -21,7 +21,8 @@ endif
 dep_hidapi = dependency(hidapi, required : false)
 
 dump_rift_s_sources = [
-	'dump-rift-s.c',
+  'dump-rift-s.c',
+  'packets.c'
 ]
 dump_rift_s_deps = [
   dep_hidapi,
