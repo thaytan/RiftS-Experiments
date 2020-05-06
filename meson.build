@@ -20,13 +20,13 @@ endif
 
 dep_hidapi = dependency(hidapi, required : false)
 
-main_sources = [
-	'test.c',
+dump_rift_s_sources = [
+	'dump-rift-s.c',
 ]
-main_deps = [
+dump_rift_s_deps = [
   dep_hidapi,
 	dep_thread,
 	dep_usb,
   dep_libm
 ]
-executable('main', main_sources, dependencies : main_deps)
+executable('dump-rift-s', dump_rift_s_sources, dependencies : dump_rift_s_deps)
