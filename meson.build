@@ -31,3 +31,12 @@ dump_rift_s_deps = [
   dep_libm
 ]
 executable('dump-rift-s', dump_rift_s_sources, dependencies : dump_rift_s_deps)
+
+parse_log_sources = [
+  'parse-log.c',
+  'packets.c'
+]
+parse_log_deps = [
+  dep_libm
+]
+executable('parse-log', parse_log_sources, dependencies : parse_log_deps)
