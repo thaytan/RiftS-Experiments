@@ -40,12 +40,6 @@ sigint_handler (int signum)
     shutdown_and_exit = true;
 }
 
-static void hexdump(const unsigned char *buf, int length) {
-  for(int i = 0; i < length; i++){
-    printf("%02x ", buf[i]);
-  }
-}
-
 static void printBuffer(const char *label, const unsigned char *buf, int length) {
   int indent;
   char ascii[17];
