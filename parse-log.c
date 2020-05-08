@@ -26,8 +26,8 @@ typedef enum {
 } read_state_t;
 
 typedef struct {
-  uint8_t packet[64];
-  int packet_size;
+  uint8_t data[64];
+  int size;
 } packet_buf_t;
 
 static bool is_hexchar (char c) {
@@ -57,9 +57,9 @@ append_to_packet (char *readbuf, packet_buf_t *packet) {
   while (readbuf[0] != '\0') {
     if (is_hexchar (readbuf[0]) && is_hexchar (readbuf[1])) {
       uint8_t val = hexval(readbuf[0]) << 4 | hexval(readbuf[1]);
-      if (packet->packet_size >= sizeof (packet->packet))
+      if (packet->size >= sizeof (packet->data))
         return false; // No room for this byte
-      packet->packet[packet->packet_size++] = val;
+      packet->data[packet->size++] = val;
       readbuf++;
       in_hexblock = true;
     }
@@ -74,28 +74,36 @@ append_to_packet (char *readbuf, packet_buf_t *packet) {
 /* Process the bytes of a collected packet */
 static bool
 handle_packet (packet_buf_t *packet) {
-  if (packet->packet_size < 1)
+  if (packet->size < 1)
     return false;
 
-  switch (packet->packet[0]) {
+  switch (packet->data[0]) {
     case 0x65: {
       hmd_report_t report;
-      if (!parse_hmd_report (&report, packet->packet, packet->packet_size)) {
+      if (!parse_hmd_report (&report, packet->data, packet->size)) {
         printf ("Invalid HMD report\n");
         return false;
       }
       printf ("HMD ");
       dump_hmd_report (&report, '\n');
+      printf ("  ");
+      hexdump_bytes(packet->data, packet->size);
+      printf ("\n");
       break;
     }
     case 0x67: {
       controller_report_t report;
-      if (!parse_controller_report (&report, packet->packet, packet->packet_size)) {
+      if (!parse_controller_report (&report, packet->data, packet->size)) {
         printf ("Invalid Controller report\n");
         return false;
       }
       printf ("Controller ");
       dump_controller_report (&report, '\n');
+#if 0
+      printf ("  ");
+      hexdump_bytes(packet->data, packet->size);
+      printf ("\n");
+#endif
       break;
     }
     default:
@@ -119,12 +127,12 @@ main (int argc, char **argv)
     line++;
 
     if (strncmp (readbuf, hmd_prefix, sizeof (hmd_prefix)-1) == 0) {
-      if (packet.packet_size > 0) {
+      if (packet.size > 0) {
         if (!handle_packet (&packet)) {
           printf ("Error in packet data preceding line %d: %s\n", line, readbuf);
           exit(1);
         }
-        packet.packet_size = 0;
+        packet.size = 0;
       }
 
       state = STATE_HMD_BLOCK;
@@ -134,12 +142,12 @@ main (int argc, char **argv)
       }
     }
     else if (strncmp (readbuf, controller_prefix, sizeof (controller_prefix)-1) == 0) {
-      if (packet.packet_size > 0) {
+      if (packet.size > 0) {
         if (!handle_packet (&packet)) {
           printf ("Error in packet data preceding line %d: %s\n", line, readbuf);
           exit(1);
         }
-        packet.packet_size = 0;
+        packet.size = 0;
       }
 
       state = STATE_CONTROLLER_BLOCK;
