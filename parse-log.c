@@ -18,6 +18,13 @@
 #include <math.h>
 
 #include "packets.h"
+#include "state.h"
+
+#define MAX_CONTROLLERS 2
+
+static bool print_state = false;
+static int num_controllers = 0;
+static controller_state_t controllers[MAX_CONTROLLERS];
 
 typedef enum {
   STATE_NONE,
@@ -71,6 +78,155 @@ append_to_packet (char *readbuf, packet_buf_t *packet) {
   return true;
 }
 
+static void
+print_controller_state (controller_state_t *ctrl)
+{
+  printf ("Controller %16lx IMU ts %8u v2 %x accel %6d %6d %6d gyro %6d %6d %6d | ",
+      ctrl->device_id, ctrl->imu_timestamp, ctrl->imu_unknown_varying2,
+      ctrl->accel[0], ctrl->accel[1], ctrl->accel[2],
+      ctrl->gyro[0], ctrl->gyro[1], ctrl->gyro[2]);
+
+  printf ("unk %02x %02x buttons %02x fingers %02x | ",
+      ctrl->mask08, ctrl->mask0e, ctrl->buttons, ctrl->fingers);
+  printf ("trigger %5d grip %5d |", ctrl->trigger, ctrl->grip);
+  printf ("joystick x %5d y %5d |", ctrl->joystick_x, ctrl->joystick_y);
+  printf ("capsense a/x %u b/y %u joy %u trig %u | ",
+          ctrl->capsense_a_x, ctrl->capsense_b_y,
+          ctrl->capsense_joystick, ctrl->capsense_trigger);
+
+  if (ctrl->extra_bytes_len) {
+    printf (" | extra ");
+    hexdump_bytes (ctrl->extra_bytes, ctrl->extra_bytes_len);
+  }
+  printf("\n");
+}
+
+static void
+update_controller_state (controller_report_t *report)
+{
+  int i;
+  controller_state_t *ctrl = NULL;
+  bool saw_imu_update = false;
+
+  if (report->device_id == 0)
+    return; // Dummy report
+
+  for (i = 0; i < num_controllers; i++) {
+    if (controllers[i].device_id == report->device_id) {
+      ctrl = controllers + i;
+      break;
+    }
+  }
+
+  if (ctrl == NULL) {
+    if (num_controllers == MAX_CONTROLLERS) {
+      fprintf (stderr, "Too many controllers. Can't add %08lx\n", report->device_id);
+      return;
+    }
+    /* Add a new controller to the tracker */
+    ctrl = controllers + num_controllers;
+    num_controllers++;
+
+    memset (ctrl, 0, sizeof (controller_state_t));
+    ctrl->device_id = report->device_id;
+  }
+
+  /* Collect state updates */
+  ctrl->extra_bytes_len = 0;
+
+  for (int i = 0; i < report->num_info; i++) {
+    controller_info_block_t *info = report->info + i;
+
+    switch (info->block_id) {
+      case RIFT_S_CTRL_MASK08:
+        ctrl->mask08 = info->maskbyte.val;
+        break;
+      case RIFT_S_CTRL_BUTTONS:
+        ctrl->buttons = info->maskbyte.val;
+        break;
+      case RIFT_S_CTRL_FINGERS:
+        ctrl->fingers = info->maskbyte.val;
+        break;
+      case RIFT_S_CTRL_MASK0e:
+        ctrl->mask0e = info->maskbyte.val;
+        break;
+      case RIFT_S_CTRL_TRIGGRIP:
+      {
+        ctrl->trigger = (uint16_t)(info->triggrip.vals[1] & 0x0f) << 8 | info->triggrip.vals[0];
+        ctrl->grip = (uint16_t)(info->triggrip.vals[1] & 0xf0) >> 4 | ((uint16_t) (info->triggrip.vals[2]) << 4);
+        break;
+      }
+      case RIFT_S_CTRL_JOYSTICK:
+        ctrl->joystick_x = info->joystick.val;
+        ctrl->joystick_y = info->joystick.val >> 16;
+        break;
+      case RIFT_S_CTRL_CAPSENSE:
+        ctrl->capsense_a_x = info->capsense.a_x;
+        ctrl->capsense_b_y = info->capsense.b_y;
+        ctrl->capsense_joystick = info->capsense.joystick;
+        ctrl->capsense_trigger = info->capsense.trigger;
+        break;
+      case RIFT_S_CTRL_IMU: {
+        int j;
+
+        /* print the state before updating the IMU timestamp a 2nd time */
+        if (saw_imu_update)
+          print_controller_state (ctrl);
+
+        ctrl->imu_timestamp = info->imu.timestamp;
+        ctrl->imu_unknown_varying2 = info->imu.unknown_varying2;
+        for (j = 0; j < 3; j++) {
+          ctrl->accel[j] = info->imu.accel[j];
+          ctrl->gyro[j] = info->imu.gyro[j];
+        }
+        saw_imu_update = true;
+        break;
+      }
+      default:
+        fprintf (stderr, "Oops - invalid info block with ID %02x\n", info->block_id);
+        assert ("Should not be reached!" == NULL);
+        break;
+    }
+  }
+
+  if (report->extra_bytes_len > 0) {
+    assert (report->extra_bytes_len <= sizeof (ctrl->extra_bytes));
+    memcpy (ctrl->extra_bytes, report->extra_bytes, report->extra_bytes_len);
+  }
+  ctrl->extra_bytes_len = report->extra_bytes_len;
+
+  print_controller_state (ctrl);
+
+  /* Finally, update and output the log */
+  if (report->flags & 0x04) {
+    /* New log line is starting, reset the counter */
+    ctrl->log_bytes = 0;
+  }
+
+  if (ctrl->log_flags & 0x04 || (ctrl->log_flags & 0x02) != (report->flags & 0x02)) {
+    /* New log bytes in this report, collect them */
+    for (i = 0; i < 3; i++) {
+      uint8_t c = report->log[i];
+      if (c != '\0') {
+        if (ctrl->log_bytes == (MAX_LOG_SIZE-1)) {
+          /* Log line got too long... output it */
+          ctrl->log[MAX_LOG_SIZE-1] = '\0';
+          printf ("L  %s\n", ctrl->log);
+          ctrl->log_bytes = 0;
+        }
+        ctrl->log[ctrl->log_bytes++] = c;
+      }
+      else if (ctrl->log_bytes > 0) {
+        /* Found the end of the string */
+        ctrl->log[ctrl->log_bytes] = '\0';
+        printf ("L  %s\n", ctrl->log);
+        ctrl->log_bytes = 0;
+      }
+    }
+  }
+  ctrl->log_flags = report->flags;
+}
+
 /* Process the bytes of a collected packet */
 static bool
 handle_packet (packet_buf_t *packet) {
@@ -86,9 +242,11 @@ handle_packet (packet_buf_t *packet) {
       }
       printf ("HMD ");
       dump_hmd_report (&report, '\n');
+#if 0
       printf ("  ");
       hexdump_bytes(packet->data, packet->size);
       printf ("\n");
+#endif
       break;
     }
     case 0x67: {
@@ -97,8 +255,12 @@ handle_packet (packet_buf_t *packet) {
         printf ("Invalid Controller report\n");
         return false;
       }
-      printf ("Controller ");
-      dump_controller_report (&report, '\n');
+      if (print_state) {
+        update_controller_state (&report);
+      } else {
+        printf ("Controller ");
+        dump_controller_report (&report, '\n');
+      }
 #if 0
       printf ("  ");
       hexdump_bytes(packet->data, packet->size);
@@ -121,6 +283,12 @@ main (int argc, char **argv)
   read_state_t state = STATE_NONE;
   int line = 0;
   packet_buf_t packet = { 0, };
+
+  for (int a = 1; a < argc; a++) {
+    if (strcmp (argv[a], "-s") == 0) {
+      print_state = true;
+    }
+  }
 
   while (fgets (readbuf, sizeof(readbuf), stdin))
   {

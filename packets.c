@@ -9,7 +9,7 @@
 #include "packets.h"
 
 /* Obscure the unique controller IDs in reports */
-#define HIDE_DEVICE_IDS 1
+#define HIDE_DEVICE_IDS 0
 
 void hexdump_bytes(const unsigned char *buf, int length) {
   for(int i = 0; i < length; i++){
@@ -37,14 +37,14 @@ void dump_hmd_report (hmd_report_t *report, const char endchar)
       report->unknown_const1, report->timestamp, report->marker);
 
   for (int i = 0; i < 2; i++) {
-    printf ("accel[%d] %5d %5d %5d gyro[%d] %5d %5d %5d delta_ts %u mark %2x | ",
+    printf ("accel[%d] %5d %5d %5d gyro[%d] %5d %5d %5d unk %u mark %2x | ",
       i, report->samples[i].accel[0], report->samples[i].accel[1], report->samples[i].accel[2],
       i, report->samples[i].gyro[0], report->samples[i].gyro[1], report->samples[i].gyro[2],
-      report->samples[i].delta_ts, report->samples[i].marker);
+      report->samples[i].unknown, report->samples[i].marker);
   }
 
-  printf ("%2x ts2 %10u unk3 ", report->unknown2, report->timestamp2);
-  printf ("%5d %5d %5d", report->unknown3[0], report->unknown3[1], report->unknown3[2]);
+  printf ("%2x frame_ts %10u ", report->unknown2, report->frame_timestamp);
+  printf ("zero %d frame_id %5d zero %d", report->unknown_zero1, report->frame_id, report->unknown_zero2);
 
   printf ("%c", endchar);
 }
@@ -107,20 +107,20 @@ parse_controller_report (controller_report_t *report, const unsigned char *buf, 
     info->block_id = buf[0];
 
     switch (info->block_id) {
-      case RIFT_S_CTRL_BTN08:
-      case RIFT_S_CTRL_BTN1:
-      case RIFT_S_CTRL_BTN2:
-      case RIFT_S_CTRL_BTN0e:
-        block_size = sizeof (controller_button_block_t);
+      case RIFT_S_CTRL_MASK08:
+      case RIFT_S_CTRL_BUTTONS:
+      case RIFT_S_CTRL_FINGERS:
+      case RIFT_S_CTRL_MASK0e:
+        block_size = sizeof (controller_maskbyte_block_t);
         break;
-      case RIFT_S_CTRL_UNKNOWN_1b:
-        block_size = sizeof (controller_unknown1b_block_t);
+      case RIFT_S_CTRL_TRIGGRIP:
+        block_size = sizeof (controller_triggrip_block_t);
+        break;
+      case RIFT_S_CTRL_JOYSTICK:
+        block_size = sizeof (controller_joystick_block_t);
         break;
       case RIFT_S_CTRL_CAPSENSE:
         block_size = sizeof (controller_capsense_block_t);
-        break;
-      case RIFT_S_CTRL_UNKNOWN_27:
-        block_size = sizeof (controller_unknown27_block_t);
         break;
       case RIFT_S_CTRL_IMU:
         block_size = sizeof (controller_imu_block_t);
@@ -159,32 +159,31 @@ void dump_controller_report (controller_report_t *report, const char endchar)
     controller_info_block_t *info = report->info + i;
 
     switch (info->block_id) {
-      case RIFT_S_CTRL_BTN08:
-        printf ("Buttons08 mask %02x | ", info->button.mask);
+      case RIFT_S_CTRL_MASK08:
+        printf ("mask08 %02x | ", info->maskbyte.val);
         break;
-      case RIFT_S_CTRL_BTN1:
-        printf ("Buttons1 mask %02x | ", info->button.mask);
+      case RIFT_S_CTRL_BUTTONS:
+        printf ("Buttons mask %02x | ", info->maskbyte.val);
         break;
-      case RIFT_S_CTRL_BTN2:
-        printf ("Buttons2 mask %02x | ", info->button.mask);
+      case RIFT_S_CTRL_FINGERS:
+        printf ("Fingers mask %02x | ", info->maskbyte.val);
         break;
-      case RIFT_S_CTRL_BTN0e:
-        printf ("Buttons0e mask %02x | ", info->button.mask);
+      case RIFT_S_CTRL_MASK0e:
+        printf ("mask0e %02x | ", info->maskbyte.val);
         break;
-      case RIFT_S_CTRL_UNKNOWN_1b:
-        printf ("Unknown (0x1b) ");
-        hexdump_bytes(info->unknown1b.vals, sizeof (info->unknown1b.vals));
+      case RIFT_S_CTRL_TRIGGRIP:
+        printf ("Trigger/Grip ");
+        hexdump_bytes(info->triggrip.vals, sizeof (info->triggrip.vals));
+        printf ("| ");
+        break;
+      case RIFT_S_CTRL_JOYSTICK:
+        printf ("Joystick %08x", info->joystick.val);
         printf ("| ");
         break;
       case RIFT_S_CTRL_CAPSENSE:
-        printf ("capsense ");
-        hexdump_bytes(info->capsense.vals, sizeof (info->capsense.vals));
-        printf ("| ");
-        break;
-      case RIFT_S_CTRL_UNKNOWN_27:
-        printf ("Unknown (0x27) ");
-        hexdump_bytes(info->unknown27.vals, sizeof (info->unknown27.vals));
-        printf ("| ");
+        printf ("capsense a/x %u b/y %u joy %u trig %u | ",
+            info->capsense.a_x, info->capsense.b_y,
+            info->capsense.joystick, info->capsense.trigger);
         break;
       case RIFT_S_CTRL_IMU:
         printf ("IMU ts %8u v2 %x accel %6d %6d %6d gyro %6d %6d %6d | ",
