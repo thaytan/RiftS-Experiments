@@ -18,10 +18,26 @@
 
 #include "packets.h"
 
+#include "controller_fw_commands.h"
+
 #define FEATURE_BUFFER_SIZE 64
 
 #define KEEPALIVE_INTERVAL_MS 1000
 #define CAMERA_REPORT_INTERVAL_MS 1000
+
+#define MAX_CONTROLLERS 2
+
+typedef struct {
+  uint64_t device_id;
+  bool finished_fw_read;
+  bool command_result_pending;
+  int read_command_idx;
+} controller_fw_state_t;
+
+static int num_controllers = 0;
+static controller_fw_state_t controllers[MAX_CONTROLLERS];
+static controller_fw_state_t *cur_controller_read = NULL;
+int last_radio_seqnum = -1;
 
 bool shutdown_and_exit = false;
 bool dump_all = true;
@@ -30,6 +46,7 @@ bool dump_controllers = false;
 bool dump_hmd = false;
 bool dump_parsed = false;
 bool dump_singleline = false;
+bool read_controller_fw = false;
 bool display_on = false;
 
 static int sleep_us (uint64_t usec);
@@ -284,6 +301,105 @@ send_report19 (hid_device *hid) {
 }
 #endif
 
+static int get_radio_response_report (hid_device *hid, hmd_radio_response_t *radio_response)
+{
+   int ret = get_report(hid, 0xb, (unsigned char *)(radio_response), sizeof(hmd_radio_response_t));
+   return ret;
+}
+
+static void
+update_controller_fw_read(hid_device *hid)
+{
+    if (cur_controller_read == NULL && num_controllers > 0) {
+      /* No firmware read currently in progress, check for a controller
+       * we haven't finished reading yet */
+      controller_fw_state_t *ctrl = NULL;
+      int i;
+
+      for (i = 0; i < num_controllers; i++) {
+        if (controllers[i].finished_fw_read == false) {
+          ctrl = controllers + i;
+          break;
+        }
+      }
+
+      if (ctrl != NULL) {
+          printf ("Starting FW read on controller 0x%08lx\n", ctrl->device_id);
+          if (last_radio_seqnum < 0) {
+              /* Before the first firmware read, we need to sync up the sequence number
+               * first */
+              hmd_radio_response_t radio_response;
+
+              if (get_radio_response_report (hid, &radio_response) < 3 ||
+                  radio_response.busy_flag != 0x00) {
+                printf ("Radio busy during initial seqnum read\n");
+                return;
+              }
+
+              last_radio_seqnum = radio_response.seqnum;
+              printf ("Got initial seqnum %d\n", radio_response.seqnum);
+          }
+
+          cur_controller_read = ctrl;
+      }
+    }
+
+    /* Nothing to read right now */
+    if (cur_controller_read == NULL)
+        return;
+
+    /* We are currently reading a controller firmware. See if we need to issue a new
+     * read command */
+    bool read_another = false;
+    do {
+      if (cur_controller_read->command_result_pending == false) {
+        riftS_fw_command_t *next_command = riftS_fw_commands + cur_controller_read->read_command_idx;
+        hmd_radio_command_t read_command;
+
+        memset (&read_command, 0, sizeof (read_command));
+        read_command.cmd = next_command->cmd;
+        read_command.device_id = cur_controller_read->device_id;
+        memcpy (read_command.cmd_bytes, next_command->cmd_bytes, sizeof (next_command->cmd_bytes));
+
+        hid_send_feature_report(hid, (unsigned char *)(&read_command), sizeof(read_command));
+        cur_controller_read->command_result_pending = true;
+        printBuffer("ControllerFWSend", (unsigned char *)(&read_command), sizeof(read_command));
+      }
+
+      /* There's a command result pending, poll the radio response until it's complete */
+      hmd_radio_response_t radio_response;
+
+      /* The radio response is ready when the busy flag has cleared, and the seqnum
+       * has incremented */
+      int ret = get_radio_response_report (hid, &radio_response);
+      assert (ret > 2);
+      if (radio_response.busy_flag != 0x00 || radio_response.seqnum == last_radio_seqnum) {
+        if (radio_response.busy_flag)
+          last_radio_seqnum = radio_response.seqnum;
+        return;
+      }
+
+      /* We have the controller response! */
+      assert (ret <= sizeof(radio_response));
+
+      cur_controller_read->command_result_pending = false;
+      // printf("ControllerFWReply device %08lx len %d\n", cur_controller_read->device_id, ret);
+      printBuffer("ControllerFWReply", (unsigned char *)(&radio_response), ret);
+
+      /* Move to the next command if there is one */
+      cur_controller_read->read_command_idx++;
+
+      if (cur_controller_read->read_command_idx < (sizeof (riftS_fw_commands)/sizeof(riftS_fw_commands[0]))) {
+          read_another = true;
+      }
+      else {
+        /* All finished with this controller - bail */
+        cur_controller_read->finished_fw_read = true;
+        cur_controller_read = NULL;
+      }
+    } while (read_another);
+}
+
 static void
 handle_hmd_report (const unsigned char *buf, int size)
 {
@@ -313,15 +429,44 @@ handle_controller_report (const unsigned char *buf, int size)
     printBuffer("Invalid Controller Report", buf, size);
   }
 
-  if (!(dump_controllers || dump_all))
-    return;
+  if (read_controller_fw || dump_all) {
+    if (report.device_id != 0x00) {
+      int i;
+      controller_fw_state_t *ctrl = NULL;
 
-  if (!dump_parsed) {
-    printBuffer("Controller", buf, size);
-    return;
+        for (i = 0; i < num_controllers; i++) {
+          if (controllers[i].device_id == report.device_id) {
+            ctrl = controllers + i;
+            break;
+          }
+        }
+
+      if (ctrl == NULL) {
+        if (num_controllers == MAX_CONTROLLERS) {
+          fprintf (stderr, "Too many controllers. Can't add %08lx\n", report.device_id);
+          return;
+        }
+
+        /* Add a new controller to the tracker */
+        ctrl = controllers + num_controllers;
+        num_controllers++;
+
+        memset (ctrl, 0, sizeof (controller_fw_state_t));
+        ctrl->device_id = report.device_id;
+        printf ("Found new controller 0x%08lx\n", report.device_id);
+      }
+    }
   }
 
-  dump_controller_report (&report, dump_singleline ? '\r' : '\n');
+  if (dump_controllers || dump_all) {
+    if (dump_parsed) {
+      dump_controller_report (&report, dump_singleline ? '\r' : '\n');
+    }
+    else {
+      printBuffer("Controller", buf, size);
+      return;
+    }
+  }
 }
 
 static void
@@ -425,6 +570,7 @@ print_usage (const char *argv0)
   printf ("  -h print HMD reports only\n");
   printf ("  -s print HMD or Controller report on a single line using \\r\n");
   printf ("  -p Parse HMD or Controller reports\n");
+  printf ("  -r Send Controller FW read commands\n");
 }
 
 int main(int argc, char **argv) {
@@ -452,6 +598,8 @@ int main(int argc, char **argv) {
       dump_parsed = true;
     } else if (strcmp (argv[a], "-s") == 0) {
       dump_singleline = false;
+    } else if (strcmp (argv[a], "-r") == 0) {
+      read_controller_fw = true;
     } else {
       print_usage (argv[0]);
       exit (0);
@@ -594,6 +742,9 @@ int main(int argc, char **argv) {
     update_hmd_device (hid_state);
 
     update_hmd_device (hid_controller);
+
+    /* Schedule or check on controller fw reads */
+    update_controller_fw_read(hid_hmd);
   }
 
 cleanup:

@@ -144,6 +144,21 @@ typedef struct {
   int16_t unknown_zero2;
 } __attribute__((aligned(1), packed)) hmd_report_t;
 
+/* Packet read from endpoint 11 (0x0b) */
+typedef struct {
+    uint8_t cmd;
+    uint8_t seqnum;
+    uint8_t busy_flag;
+    uint8_t response_bytes[197];
+} __attribute__((aligned(1), packed)) hmd_radio_response_t;
+
+/* Struct for sending radio commands to 0x12 / 0x13 */
+typedef struct {
+    uint8_t cmd;
+    uint64_t device_id;
+    uint8_t cmd_bytes[52];
+} __attribute__((aligned(1), packed)) hmd_radio_command_t;
+
 void hexdump_bytes(const unsigned char *buf, int length);
 
 bool parse_hmd_report (hmd_report_t *report, const unsigned char *buf, int size);
