@@ -429,7 +429,7 @@ handle_controller_report (const unsigned char *buf, int size)
     printBuffer("Invalid Controller Report", buf, size);
   }
 
-  if (read_controller_fw || dump_all) {
+  if (read_controller_fw) {
     if (report.device_id != 0x00) {
       int i;
       controller_fw_state_t *ctrl = NULL;
