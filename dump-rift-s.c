@@ -534,6 +534,15 @@ static uint64_t ohmd_monotonic_get()
   return ticks;
 }
 
+int rift_s_read_imu_config (hid_device *hid, rift_s_imu_config_t *imu_config)
+{
+	int res = get_report(hid, 0x9, (unsigned char *)(imu_config), sizeof(rift_s_imu_config_t));
+	if (res < 21)
+		return -1;
+
+	return 0;
+}
+
 static int sleep_us (uint64_t usec)
 {
   struct timespec ts;
@@ -689,6 +698,16 @@ int main(int argc, char **argv) {
     exit(1);
   }
   printBuffer("report 1", buff, b);
+
+	rift_s_imu_config_t imu_config;
+  if (rift_s_read_imu_config (hid_hmd, &imu_config) >= 0) {
+		printf ("IMU config %u Hz. Gyro scale %f Accel scale %f Temperature scale %f offset %f\n",
+			imu_config.imu_hz, imu_config.gyro_scale, imu_config.accel_scale,
+			imu_config.temperature_scale, imu_config.temperature_offset);
+  }
+	else {
+		printf ("Failed to read IMU config block\n");
+	}
 
   buff[0] = 0x07;
   buff[1] = 0xa3;

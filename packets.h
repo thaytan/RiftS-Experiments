@@ -113,6 +113,7 @@ typedef struct {
 } controller_report_t;
 
 typedef struct {
+  uint8_t marker; /* 0x80 = invalid, other values... not sure. Time offset? */
   int16_t accel[3];
   int16_t gyro[3];
 
@@ -120,8 +121,7 @@ typedef struct {
    * don't really make sense. They're sometimes ~2000, sometimes around 4000-4400,
    * and seem to gradually increase the longer the headset is running. Is it temperature?
    * If so, it's very noisy */
-  uint16_t unknown;
-  uint8_t marker;
+  int16_t temperature;
 } __attribute__((aligned(1), packed)) hmd_imu_sample_t;
 
 typedef struct {
@@ -130,10 +130,9 @@ typedef struct {
 
   uint32_t timestamp;
 
-  uint8_t marker;
-
   hmd_imu_sample_t samples[3];
 
+  uint8_t marker;
   uint8_t unknown2;
 
   /* Frame timestamp and ID increment when the screen is running,
@@ -158,6 +157,16 @@ typedef struct {
     uint64_t device_id;
     uint8_t cmd_bytes[52];
 } __attribute__((aligned(1), packed)) hmd_radio_command_t;
+
+/* Read using report 9 */
+typedef struct {
+		uint8_t cmd;
+		uint32_t imu_hz;
+		float gyro_scale; /* Gyro = reading / 32768 * gyro_scale */
+		float accel_scale; /* Accel = reading * g / accel_scale */
+		float temperature_scale; /* Temperature = reading / scale + offset */
+		float temperature_offset;
+} __attribute__((aligned(1), packed)) rift_s_imu_config_t;
 
 void hexdump_bytes(const unsigned char *buf, int length);
 

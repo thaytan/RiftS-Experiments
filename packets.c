@@ -33,17 +33,18 @@ parse_hmd_report (hmd_report_t *report, const unsigned char *buf, int size)
 
 void dump_hmd_report (hmd_report_t *report, const char endchar)
 {
-  printf ("const %u ts %10u mark %2x ",
-      report->unknown_const1, report->timestamp, report->marker);
+  printf ("const %u ts %10u ",
+      report->unknown_const1, report->timestamp);
 
-  for (int i = 0; i < 2; i++) {
-    printf ("accel[%d] %5d %5d %5d gyro[%d] %5d %5d %5d unk %u mark %2x | ",
+  for (int i = 0; i < 3; i++) {
+    printf ("mark %2x accel[%d] %5d %5d %5d gyro[%d] %5d %5d %5d temp %d | ",
+      report->samples[i].marker,
       i, report->samples[i].accel[0], report->samples[i].accel[1], report->samples[i].accel[2],
       i, report->samples[i].gyro[0], report->samples[i].gyro[1], report->samples[i].gyro[2],
-      report->samples[i].unknown, report->samples[i].marker);
+      report->samples[i].temperature);
   }
 
-  printf ("%2x frame_ts %10u ", report->unknown2, report->frame_timestamp);
+  printf ("mark %2x %2x frame_ts %10u ", report->marker, report->unknown2, report->frame_timestamp);
   printf ("zero %d frame_id %5d zero %d", report->unknown_zero1, report->frame_id, report->unknown_zero2);
 
   printf ("%c", endchar);
