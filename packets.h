@@ -168,6 +168,17 @@ typedef struct {
 		float temperature_offset;
 } __attribute__((aligned(1), packed)) rift_s_imu_config_t;
 
+typedef enum {
+    RIFT_S_DEVICE_TYPE_UNKNOWN = 0,
+    RIFT_S_DEVICE_LEFT_CONTROLLER = 0x13001101,
+    RIFT_S_DEVICE_RIGHT_CONTROLLER = 0x13011101,
+} rift_s_device_type;
+
+typedef struct {
+  uint64_t device_id;
+  uint32_t device_type;
+} __attribute__((aligned(1), packed)) rift_s_device_type_record_t;
+
 void hexdump_bytes(const unsigned char *buf, int length);
 
 bool parse_hmd_report (hmd_report_t *report, const unsigned char *buf, int size);

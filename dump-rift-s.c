@@ -29,6 +29,7 @@
 
 typedef struct {
   uint64_t device_id;
+  rift_s_device_type device_type;
   bool finished_fw_read;
   bool command_result_pending;
   int read_command_idx;
@@ -420,8 +421,48 @@ handle_hmd_report (const unsigned char *buf, int size)
   dump_hmd_report (&report, dump_singleline ? '\r' : '\n');
 }
 
+static int
+update_device_types (hid_device *hid) {
+	unsigned char buf[200];
+	bool changed = false;
+
+	int res = get_report(hid, 0xc, buf, sizeof(buf));
+	if (res < 3)
+		return -1;
+
+	int num_records = (res - 3) / 28;
+	if (num_records > buf[2])
+		num_records = buf[2];
+
+	unsigned char *pos = buf + 3;
+	for (int i = 0; i < num_records; i++) {
+		rift_s_device_type_record_t device_record = *(rift_s_device_type_record_t *)(pos);
+		int c;
+
+		// printf("# controller 0x%16lx = type 0x%08x\n", device_record.device_id, device_record.device_type);
+		for (c = 0; c < num_controllers; c++) {
+			if (controllers[c].device_id == device_record.device_id) {
+				if (controllers[c].device_type != device_record.device_type) {
+					controllers[c].device_type = device_record.device_type;
+					changed = true;
+				}
+				break;
+			}
+		}
+		if (c == num_controllers) {
+			printf("# Got a device type record for an unknown device 0x%16lx\n", device_record.device_id);
+		}
+		pos += 28;
+	}
+
+	if (changed)
+		printBuffer("ControllerType", buf, res);
+
+	return 0;
+}
+
 static void
-handle_controller_report (const unsigned char *buf, int size)
+handle_controller_report (hid_device *hid, const unsigned char *buf, int size)
 {
   controller_report_t report;
 
@@ -429,33 +470,35 @@ handle_controller_report (const unsigned char *buf, int size)
     printBuffer("Invalid Controller Report", buf, size);
   }
 
-  if (read_controller_fw) {
-    if (report.device_id != 0x00) {
-      int i;
-      controller_fw_state_t *ctrl = NULL;
+  if (report.device_id != 0x00) {
+    int i;
+    controller_fw_state_t *ctrl = NULL;
 
-        for (i = 0; i < num_controllers; i++) {
-          if (controllers[i].device_id == report.device_id) {
-            ctrl = controllers + i;
-            break;
-          }
+      for (i = 0; i < num_controllers; i++) {
+        if (controllers[i].device_id == report.device_id) {
+          ctrl = controllers + i;
+          break;
         }
-
-      if (ctrl == NULL) {
-        if (num_controllers == MAX_CONTROLLERS) {
-          fprintf (stderr, "Too many controllers. Can't add %08lx\n", report.device_id);
-          return;
-        }
-
-        /* Add a new controller to the tracker */
-        ctrl = controllers + num_controllers;
-        num_controllers++;
-
-        memset (ctrl, 0, sizeof (controller_fw_state_t));
-        ctrl->device_id = report.device_id;
-        printf ("Found new controller 0x%08lx\n", report.device_id);
       }
+
+    if (ctrl == NULL) {
+      if (num_controllers == MAX_CONTROLLERS) {
+        fprintf (stderr, "Too many controllers. Can't add %08lx\n", report.device_id);
+        return;
+      }
+
+      /* Add a new controller to the tracker */
+      ctrl = controllers + num_controllers;
+      num_controllers++;
+
+      memset (ctrl, 0, sizeof (controller_fw_state_t));
+      ctrl->device_id = report.device_id;
+      update_device_types (hid);
+      printf ("# Found new controller 0x%16lx type %08x\n", report.device_id, ctrl->device_type);
     }
+
+    if (ctrl->device_type == 0x00)
+      update_device_types (hid);
   }
 
   if (dump_controllers || dump_all) {
@@ -470,7 +513,7 @@ handle_controller_report (const unsigned char *buf, int size)
 }
 
 static void
-update_hmd_device (hid_device *hid)
+update_hmd_device (hid_device *hid, hid_device *hid_hmd)
 {
   unsigned char buf[FEATURE_BUFFER_SIZE];
 
@@ -488,7 +531,7 @@ update_hmd_device (hid_device *hid)
     if (buf[0] == 0x65)
       handle_hmd_report (buf, size);
     else if (buf[0] == 0x67)
-      handle_controller_report (buf, size);
+      handle_controller_report (hid_hmd, buf, size);
     else if (buf[0] == 0x66) {
       // System state packet. Enable the screen if the prox sensor is
       // triggered
@@ -755,15 +798,16 @@ int main(int argc, char **argv) {
       last_keepalive = now;
     }
 
-    update_hmd_device (hid_hmd);
+    update_hmd_device (hid_hmd, hid_hmd);
 
     /* State report is 5 bytes. Byte 0 = 00 or 01 based on prox sensor */
-    update_hmd_device (hid_state);
+    update_hmd_device (hid_state, hid_hmd);
 
-    update_hmd_device (hid_controller);
+    update_hmd_device (hid_controller, hid_hmd);
 
     /* Schedule or check on controller fw reads */
-    update_controller_fw_read(hid_hmd);
+    if (read_controller_fw)
+      update_controller_fw_read(hid_hmd);
   }
 
 cleanup:

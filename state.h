@@ -11,6 +11,7 @@
 
 typedef struct {
   uint64_t device_id;
+  uint32_t device_type;
 
   /* 0x04 = new log line
    * 0x02 = parity bit, toggles each line when receiving log chars 

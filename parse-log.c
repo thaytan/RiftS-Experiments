@@ -29,11 +29,12 @@ static controller_state_t controllers[MAX_CONTROLLERS];
 typedef enum {
   STATE_NONE,
   STATE_HMD_BLOCK,
-  STATE_CONTROLLER_BLOCK
+  STATE_CONTROLLER_BLOCK,
+  STATE_CONTROLLER_TYPE_BLOCK,
 } read_state_t;
 
 typedef struct {
-  uint8_t data[64];
+  uint8_t data[200];
   int size;
 } packet_buf_t;
 
@@ -81,8 +82,8 @@ append_to_packet (char *readbuf, packet_buf_t *packet) {
 static void
 print_controller_state (controller_state_t *ctrl)
 {
-  printf ("Controller %16lx IMU ts %8u v2 %x accel %6d %6d %6d gyro %6d %6d %6d | ",
-      ctrl->device_id, ctrl->imu_timestamp, ctrl->imu_unknown_varying2,
+  printf ("Controller %16lx type 0x%08x IMU ts %8u v2 %x accel %6d %6d %6d gyro %6d %6d %6d | ",
+      ctrl->device_id, ctrl->device_type, ctrl->imu_timestamp, ctrl->imu_unknown_varying2,
       ctrl->accel[0], ctrl->accel[1], ctrl->accel[2],
       ctrl->gyro[0], ctrl->gyro[1], ctrl->gyro[2]);
 
@@ -227,13 +228,51 @@ update_controller_state (controller_report_t *report)
   ctrl->log_flags = report->flags;
 }
 
+static void
+update_controller_types(const unsigned char *buf, int size) {
+	if (size < 3)
+		return;
+
+  int num_records = (size - 3) / 28;
+  if (num_records > buf[2])
+    num_records = buf[2];
+
+  const unsigned char *pos = buf + 3;
+  for (int i = 0; i < num_records; i++) {
+    rift_s_device_type_record_t device_record = *(rift_s_device_type_record_t *)(pos);
+    int c;
+
+    // printf("# controller 0x%16lx = type 0x%08x\n", device_record.device_id, device_record.device_type);
+    for (c = 0; c < num_controllers; c++) {
+      if (controllers[c].device_id == device_record.device_id) {
+        controllers[c].device_type = device_record.device_type;
+        break;
+      }
+    }
+    if (c == num_controllers) {
+      printf("# Got a device type record for an unknown device 0x%16lx\n", device_record.device_id);
+    }
+    pos += 28;
+  }
+}
+
 /* Process the bytes of a collected packet */
 static bool
 handle_packet (packet_buf_t *packet) {
   if (packet->size < 1)
-    return false;
+    return true; /* Empty packet, no worries */
+
+#if 0
+   printf ("  ");
+   hexdump_bytes(packet->data, packet->size);
+   printf ("\n");
+#endif
 
   switch (packet->data[0]) {
+    case 0xc: {
+      update_controller_types(packet->data, packet->size);
+      break;
+    }
     case 0x65: {
       hmd_report_t report;
       if (!parse_hmd_report (&report, packet->data, packet->size)) {
@@ -242,11 +281,6 @@ handle_packet (packet_buf_t *packet) {
       }
       printf ("HMD ");
       dump_hmd_report (&report, '\n');
-#if 0
-      printf ("  ");
-      hexdump_bytes(packet->data, packet->size);
-      printf ("\n");
-#endif
       break;
     }
     case 0x67: {
@@ -261,11 +295,6 @@ handle_packet (packet_buf_t *packet) {
         printf ("Controller ");
         dump_controller_report (&report, '\n');
       }
-#if 0
-      printf ("  ");
-      hexdump_bytes(packet->data, packet->size);
-      printf ("\n");
-#endif
       break;
     }
     default:
@@ -278,8 +307,9 @@ int
 main (int argc, char **argv)
 {
   char readbuf[1024];
-  const char hmd_prefix[] = "HMD";
-  const char controller_prefix[] = "Controller";
+  const char hmd_prefix[] = "HMD:";
+  const char controller_prefix[] = "Controller:";
+  const char controller_type_prefix[] = "ControllerType:";
   read_state_t state = STATE_NONE;
   int line = 0;
   packet_buf_t packet = { 0, };
@@ -295,13 +325,11 @@ main (int argc, char **argv)
     line++;
 
     if (strncmp (readbuf, hmd_prefix, sizeof (hmd_prefix)-1) == 0) {
-      if (packet.size > 0) {
-        if (!handle_packet (&packet)) {
-          printf ("Error in packet data preceding line %d: %s\n", line, readbuf);
-          exit(1);
-        }
-        packet.size = 0;
+      if (!handle_packet (&packet)) {
+        printf ("Error in packet data preceding line %d: %s\n", line, readbuf);
+        exit(1);
       }
+      packet.size = 0;
 
       state = STATE_HMD_BLOCK;
       if (!append_to_packet (readbuf + strlen(hmd_prefix), &packet)) {
@@ -310,13 +338,11 @@ main (int argc, char **argv)
       }
     }
     else if (strncmp (readbuf, controller_prefix, sizeof (controller_prefix)-1) == 0) {
-      if (packet.size > 0) {
-        if (!handle_packet (&packet)) {
-          printf ("Error in packet data preceding line %d: %s\n", line, readbuf);
-          exit(1);
-        }
-        packet.size = 0;
+      if (!handle_packet (&packet)) {
+        printf ("Error in packet data preceding line %d: %s\n", line, readbuf);
+        exit(1);
       }
+      packet.size = 0;
 
       state = STATE_CONTROLLER_BLOCK;
       if (!append_to_packet (readbuf + strlen(controller_prefix), &packet)) {
@@ -324,14 +350,35 @@ main (int argc, char **argv)
         exit(1);
       }
     }
+    else if (strncmp (readbuf, controller_type_prefix, sizeof (controller_type_prefix)-1) == 0) {
+      if (!handle_packet (&packet)) {
+        printf ("Error in packet data preceding line %d: %s\n", line, readbuf);
+        exit(1);
+      }
+      packet.size = 0;
+
+      state = STATE_CONTROLLER_TYPE_BLOCK;
+      if (!append_to_packet (readbuf + strlen(controller_type_prefix), &packet)) {
+        printf ("Error reading line %d: %s\n", line, readbuf);
+        exit(1);
+      }
+    }
     else if (readbuf[0] == ' ') {
       /* Read a continuation line in an existing block */
-      if (state == STATE_HMD_BLOCK || state == STATE_CONTROLLER_BLOCK) {
+      if (state == STATE_HMD_BLOCK || state == STATE_CONTROLLER_BLOCK || state == STATE_CONTROLLER_TYPE_BLOCK) {
         if (!append_to_packet (readbuf, &packet)) {
           printf ("Error reading line %d: %s\n", line, readbuf);
           exit(1);
         }
       }
+    }
+    else {
+      if (!handle_packet (&packet)) {
+        printf ("Error in packet data preceding line %d: %s\n", line, readbuf);
+        exit(1);
+      }
+      packet.size = 0;
+      state = STATE_NONE;
     }
   }
 }
