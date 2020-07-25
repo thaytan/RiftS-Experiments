@@ -1,13 +1,14 @@
 # RiftS-Experiments
 This is a repository of experimental code for understanding the Oculus Rift S headset.
 
-At the moment, it contains a dump tool that logs a bunch of information from a
+It is currently inactive - the experiments here were used to write a driver for the Rift S which was merged into OpenHMD in June 2020.
+
+The repo contains a dump tool that logs a bunch of information from a
 connected headset, and a parse utility that scans the dump logs for tracking
 reports and reads out the contained information.
 
-My focus is currently on figuring out the USB commands that read identification
-and calibration information from the touch controllers over the radio link between
-the HMD and the controllers.
+Enough of the USB protocol is now understood - and documented in this code - to permit writing
+a full positional tracking implementation at some point, building on the 3DOF driver that already works.
 
 ## Collecting logs
 
